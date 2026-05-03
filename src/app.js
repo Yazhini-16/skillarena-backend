@@ -6,10 +6,11 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
-// Health check FIRST — before all middleware so it always responds fast
+// Health check first — always responds immediately
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', ts: new Date().toISOString() });
 });
+
 app.get('/', (req, res) => {
   res.status(200).json({ success: true, message: 'Backend is running' });
 });
@@ -23,6 +24,7 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+// This handles preflight OPTIONS requests automatically
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
@@ -32,11 +34,13 @@ app.use(cors({
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
 }));
 
-
-
+// Razorpay webhook needs raw body
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(apiLimiter);
@@ -46,7 +50,10 @@ app.use('/api/wallet', require('./routes/wallet'));
 app.use('/api/matches', require('./routes/match'));
 app.use('/api/payments', require('./routes/payment'));
 
-app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: 'Route not found' });
+});
+
 app.use(errorHandler);
 
 module.exports = app;
