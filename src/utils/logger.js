@@ -4,4 +4,4 @@ const logger = {
   warn: (msg, meta = {}) => console.warn(JSON.stringify({ level: 'warn', msg, ...meta, ts: new Date().toISOString() })),
 };
 
-module.exports = logger;
+export default logger;

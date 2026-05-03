@@ -1,4 +1,4 @@
-const Redis = require('ioredis');
+import Redis from 'ioredis';
 
 if (!process.env.REDIS_URL) {
   throw new Error('REDIS_URL environment variable is not set');
@@ -22,4 +22,4 @@ redisClient.on('ready', () => console.log('Redis ready'));
 redisClient.on('error', (err) => console.error('Redis error:', err.message));
 redisClient.on('reconnecting', () => console.warn('Redis reconnecting...'));
 
-module.exports = { redisClient };
+export { redisClient };

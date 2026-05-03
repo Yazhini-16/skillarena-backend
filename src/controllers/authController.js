@@ -1,5 +1,5 @@
-const authService = require('../services/authService');
-const { success, error } = require('../utils/response');
+import * as authService from '../services/authService.js';
+import { success, error } from '../utils/response.js';
 
 const register = async (req, res, next) => {
   try {
@@ -22,4 +22,4 @@ const getMe = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { register, login, getMe };
+export { register, login, getMe };

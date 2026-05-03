@@ -1,12 +1,14 @@
-const router = require('express').Router();
-const { authenticate } = require('../middleware/auth');
-const { success, error } = require('../utils/response');
-const {
+import { Router } from 'express';
+import express from 'express';
+import { authenticate } from '../middleware/auth.js';
+import { success, error } from '../utils/response.js';
+import {
   createOrder,
   verifyAndCreditWallet,
   handleWebhook,
-} = require('../services/paymentService');
-const express = require('express');
+} from '../services/paymentService.js';
+
+const router = Router();
 
 // ── Create order — authenticated ───────────────────────────────────
 router.post('/create-order', authenticate, async (req, res, next) => {
@@ -48,4 +50,4 @@ router.post(
   }
 );
 
-module.exports = router;
+export default router;

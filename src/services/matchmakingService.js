@@ -1,8 +1,7 @@
-const { redisClient } = require('../config/redis');
-const { pool } = require('../config/db');
-const { lockFundsForMatch } = require('./walletService');
-const { withTransaction } = require('../config/db');
-const { v4: uuidv4 } = require('uuid');
+import { redisClient } from '../config/redis.js';
+import { pool, withTransaction } from '../config/db.js';
+import { lockFundsForMatch } from './walletService.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const QUEUE_KEY = (fee) => `queue:${fee}`;
 const MATCH_TIMEOUT_MS = 90 * 1000; // 90 seconds before refund
@@ -79,4 +78,4 @@ const processQueue = async (entryFee) => {
   return { matchId, playerAId, playerBId, problemId, entryFee, prizePool };
 };
 
-module.exports = { joinQueue, leaveQueue, processQueue };
+export { joinQueue, leaveQueue, processQueue };

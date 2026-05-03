@@ -1,6 +1,6 @@
-const bcrypt = require('bcryptjs');
-const { pool } = require('../config/db');
-const { generateToken } = require('../utils/jwt');
+import bcrypt from 'bcryptjs';
+import { pool } from '../config/db.js';
+import { generateToken } from '../utils/jwt.js';
 
 
 const register = async ({ username, email, password }) => {
@@ -78,4 +78,4 @@ const getProfile = async (userId) => {
   return result.rows[0];
 };
 
-module.exports = { register, login, getProfile };
+export { register, login, getProfile };

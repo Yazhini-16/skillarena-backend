@@ -1,10 +1,10 @@
-const { redisClient } = require('../config/redis');
-const { pool, withTransaction } = require('../config/db');
-const { lockFundsForMatch } = require('../services/walletService');
-const { startMatchTimer } = require('./timerService');
-const { setActiveMatch } = require('./presenceService');
-const logger = require('../utils/logger');
-const { v4: uuidv4 } = require('uuid');
+import { redisClient } from '../config/redis.js';
+import { pool, withTransaction } from '../config/db.js';
+import { lockFundsForMatch } from '../services/walletService.js';
+import { startMatchTimer } from './timerService.js';
+import { setActiveMatch } from './presenceService.js';
+import logger from '../utils/logger.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const VALID_FEES = [10, 25, 50, 100, 200, 500];
 
@@ -247,7 +247,8 @@ const handleTimerExpiry = async (io, matchId) => {
       message: "Time's up! Calculating results...",
     });
 
-    const { resolveMatch } = require('./matchHandler');
+    // Use dynamic import to avoid circular dependency at module load time
+    const { resolveMatch } = await import('./matchHandler.js');
     await resolveMatch(io, matchId, winnerId, loserId, 'TIME_UP');
 
   } catch (err) {
@@ -255,5 +256,5 @@ const handleTimerExpiry = async (io, matchId) => {
   }
 };
 
-module.exports = matchmakingHandler;
-module.exports.tryCreateMatch = tryCreateMatch;
+export default matchmakingHandler;
+export { tryCreateMatch };

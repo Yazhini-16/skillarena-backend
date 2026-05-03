@@ -1,7 +1,7 @@
-const Razorpay = require('razorpay');
-const crypto = require('crypto');
-const { pool, withTransaction } = require('../config/db');
-const logger = require('../utils/logger');
+import Razorpay from 'razorpay';
+import crypto from 'crypto';
+import { pool, withTransaction } from '../config/db.js';
+import logger from '../utils/logger.js';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -184,4 +184,4 @@ const handleWebhook = async (rawBody, signature) => {
   return { received: true };
 };
 
-module.exports = { createOrder, verifyAndCreditWallet, handleWebhook };
+export { createOrder, verifyAndCreditWallet, handleWebhook };

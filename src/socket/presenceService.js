@@ -1,4 +1,4 @@
-const { redisClient } = require('../config/redis');
+import { redisClient } from '../config/redis.js';
 
 const isUserOnline = async (userId) => {
   const socketId = await redisClient.get(`presence:${userId}`);
@@ -17,4 +17,4 @@ const clearActiveMatch = async (userId) => {
   await redisClient.del(`user:${userId}:active_match`);
 };
 
-module.exports = { isUserOnline, getSocketId, setActiveMatch, clearActiveMatch };
+export { isUserOnline, getSocketId, setActiveMatch, clearActiveMatch };

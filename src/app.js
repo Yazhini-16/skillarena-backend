@@ -1,8 +1,12 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const { apiLimiter } = require('./middleware/rateLimiter');
-const errorHandler = require('./middleware/errorHandler');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import { apiLimiter } from './middleware/rateLimiter.js';
+import errorHandler from './middleware/errorHandler.js';
+import authRoutes from './routes/auth.js';
+import walletRoutes from './routes/wallet.js';
+import matchRoutes from './routes/match.js';
+import paymentRoutes from './routes/payment.js';
 
 const app = express();
 
@@ -23,12 +27,12 @@ app.use(apiLimiter);
 
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/wallet', require('./routes/wallet'));
-app.use('/api/matches', require('./routes/match'));
-app.use('/api/payments', require('./routes/payment'));
+app.use('/api/auth', authRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/matches', matchRoutes);
+app.use('/api/payments', paymentRoutes);
 
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
 app.use(errorHandler);
 
-module.exports = app;
+export default app;

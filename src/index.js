@@ -1,11 +1,11 @@
-require('dotenv').config();
-const http = require('http');
-const app = require('./app');
-const { initSocket } = require('./socket/index');
-const { testConnection } = require('./config/db');
-const { redisClient } = require('./config/redis');
-const { tryCreateMatch } = require('./socket/matchmakingHandler');
-const logger = require('./utils/logger');
+import 'dotenv/config';
+import http from 'http';
+import app from './app.js';
+import { initSocket } from './socket/index.js';
+import { testConnection } from './config/db.js';
+import { redisClient } from './config/redis.js';
+import { tryCreateMatch } from './socket/matchmakingHandler.js';
+import logger from './utils/logger.js';
 
 
 const PORT = process.env.PORT || 8080;

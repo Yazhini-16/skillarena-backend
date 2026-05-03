@@ -1,5 +1,5 @@
-const walletService = require('../services/walletService');
-const { success, error } = require('../utils/response');
+import * as walletService from '../services/walletService.js';
+import { success, error } from '../utils/response.js';
 
 const getWallet = async (req, res, next) => {
   try {
@@ -27,4 +27,4 @@ const deposit = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getWallet, getTransactions, deposit };
+export { getWallet, getTransactions, deposit };

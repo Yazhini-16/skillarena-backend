@@ -1,10 +1,12 @@
-const router = require('express').Router();
-const { joinQueue, leaveQueue, getMatch } = require('../controllers/matchController');
-const { authenticate } = require('../middleware/auth');
+import { Router } from 'express';
+import { joinQueue, leaveQueue, getMatch } from '../controllers/matchController.js';
+import { authenticate } from '../middleware/auth.js';
+
+const router = Router();
 
 router.use(authenticate);
 router.post('/queue/join', joinQueue);
 router.post('/queue/leave', leaveQueue);
 router.get('/:matchId', getMatch);
 
-module.exports = router;
+export default router;
