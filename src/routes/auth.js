@@ -1,10 +1,12 @@
-const router = require('express').Router();
-const { register, login, getMe } = require('../controllers/authController');
-const { authenticate } = require('../middleware/auth');
-const { authLimiter } = require('../middleware/rateLimiter');
+import { Router } from 'express';
+import { register, login, getMe } from '../controllers/authController.js';
+import { authenticate } from '../middleware/auth.js';
+import { authLimiter } from '../middleware/rateLimiter.js';
+
+const router = Router();
 
 router.post('/register', authLimiter, register);
 router.post('/login', authLimiter, login);
 router.get('/me', authenticate, getMe);
 
-module.exports = router;
+export default router;

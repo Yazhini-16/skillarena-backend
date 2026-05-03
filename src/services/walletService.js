@@ -1,4 +1,4 @@
-const { pool, withTransaction } = require('../config/db');
+import { pool, withTransaction } from '../config/db.js';
 
 const getWallet = async (userId) => {
   const result = await pool.query(
@@ -146,4 +146,4 @@ const refundBothPlayers = async (playerAId, playerBId, entryFee, matchId) => {
   });
 };
 
-module.exports = { getWallet, getTransactionHistory, deposit, lockFundsForMatch, releaseEscrowToWinner, refundBothPlayers };
+export { getWallet, getTransactionHistory, deposit, lockFundsForMatch, releaseEscrowToWinner, refundBothPlayers };

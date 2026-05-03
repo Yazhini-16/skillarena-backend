@@ -1,5 +1,5 @@
-const { verifyToken } = require('../utils/jwt');
-const { error } = require('../utils/response');
+import { verifyToken } from '../utils/jwt.js';
+import { error } from '../utils/response.js';
 
 const authenticate = (req, res, next) => {
   try {
@@ -21,4 +21,4 @@ const authenticate = (req, res, next) => {
   }
 };
 
-module.exports = { authenticate };
+export { authenticate };

@@ -1,10 +1,10 @@
-const { redisClient } = require('../config/redis');
-const { pool } = require('../config/db');
-const { getMatchTimer } = require('./timerService');
-const { clearActiveMatch } = require('./presenceService');
-const { releaseEscrowToWinner, refundBothPlayers } = require('../services/walletService');
-const { evaluateCode } = require('../services/judgeService');
-const logger = require('../utils/logger');
+import { redisClient } from '../config/redis.js';
+import { pool } from '../config/db.js';
+import { getMatchTimer } from './timerService.js';
+import { clearActiveMatch } from './presenceService.js';
+import { releaseEscrowToWinner, refundBothPlayers } from '../services/walletService.js';
+import { evaluateCode, executeCode } from '../services/judgeService.js';
+import logger from '../utils/logger.js';
 
 const matchHandler = (io, socket) => {
   const { id: userId } = socket.user;
@@ -92,7 +92,6 @@ const matchHandler = (io, socket) => {
       }
 
       // Run against each public test case and return detailed results
-      const { executeCode } = require('../services/judgeService');
       const normalize = (str) => str?.trim().replace(/\r\n/g, '\n') || '';
       const results = [];
 
@@ -462,6 +461,5 @@ const resolveMatch = async (io, matchId, winnerId, loserId, resolveType = 'COMPL
 };
 
 // Export resolveMatch so socket/index.js can call it for forfeit
-module.exports = matchHandler;
-module.exports.resolveMatch = resolveMatch;
-module.exports.executeCode = require('../services/judgeService').evaluateCode;
+export default matchHandler;
+export { resolveMatch };

@@ -1,6 +1,6 @@
-const matchmakingService = require('../services/matchmakingService');
-const { pool } = require('../config/db');
-const { success, error } = require('../utils/response');
+import * as matchmakingService from '../services/matchmakingService.js';
+import { pool } from '../config/db.js';
+import { success, error } from '../utils/response.js';
 
 const joinQueue = async (req, res, next) => {
   try {
@@ -48,4 +48,4 @@ const getMatch = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { joinQueue, leaveQueue, getMatch };
+export { joinQueue, leaveQueue, getMatch };

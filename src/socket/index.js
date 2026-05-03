@@ -1,9 +1,9 @@
-const { Server } = require('socket.io');
-const { verifyToken } = require('../utils/jwt');
-const { redisClient } = require('../config/redis');
-const matchmakingHandler = require('./matchmakingHandler');
-const matchHandler = require('./matchHandler');
-const logger = require('../utils/logger');
+import { Server } from 'socket.io';
+import { verifyToken } from '../utils/jwt.js';
+import { redisClient } from '../config/redis.js';
+import matchmakingHandler from './matchmakingHandler.js';
+import matchHandler from './matchHandler.js';
+import logger from '../utils/logger.js';
 
 let io;
 
@@ -92,7 +92,8 @@ const handleDisconnectForfeit = async (io, disconnectedUserId, matchId) => {
       message: 'Your opponent disconnected. You win!',
     });
 
-    const { resolveMatch } = require('./matchHandler');
+    // Use dynamic import to avoid circular dependency at module load time
+    const { resolveMatch } = await import('./matchHandler.js');
     await resolveMatch(io, matchId, winnerId, disconnectedUserId, 'FORFEIT');
 
   } catch (err) {
@@ -105,4 +106,4 @@ const getIO = () => {
   return io;
 };
 
-module.exports = { initSocket, getIO };
+export { initSocket, getIO };

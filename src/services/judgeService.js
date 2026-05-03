@@ -1,10 +1,9 @@
-const { pool } = require('../config/db');
-const logger = require('../utils/logger');
-const vm = require('vm');
-const { execSync, exec } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+import { pool } from '../config/db.js';
+import logger from '../utils/logger.js';
+import { execSync, exec, spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 const SUPPORTED_LANGUAGES = ['javascript', 'python', 'cpp', 'java'];
 
@@ -23,7 +22,7 @@ const executeJS = (code, stdin) => {
     try {
       fs.writeFileSync(tmpFile, code);
 
-      const child = require('child_process').spawn(
+      const child = spawn(
         process.execPath, // current node binary
         [tmpFile],
         {
@@ -79,7 +78,7 @@ const executePython = (code, stdin) => {
         return resolve({ stdout: '', stderr: 'Python not installed', exitCode: 1 });
       }
 
-      const child = require('child_process').spawn(pythonBin, [tmpFile], { timeout: 5000 });
+      const child = spawn(pythonBin, [tmpFile], { timeout: 5000 });
       let stdout = '', stderr = '';
 
       child.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -260,7 +259,7 @@ const testConnection = async () => {
   return true;
 };
 
-module.exports = {
+export {
   evaluateCode,
   executeCode,
   testConnection,

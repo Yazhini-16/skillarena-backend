@@ -1,4 +1,4 @@
-const { redisClient } = require('../config/redis');
+import { redisClient } from '../config/redis.js';
 
 const MATCH_DURATION_MS = 30 * 60 * 1000;
 
@@ -34,4 +34,4 @@ const clearMatchTimer = async (matchId) => {
   await redisClient.del(`match:${matchId}:end_ts`);
 };
 
-module.exports = { startMatchTimer, getMatchTimer, isMatchExpired, clearMatchTimer, MATCH_DURATION_MS };
+export { startMatchTimer, getMatchTimer, isMatchExpired, clearMatchTimer, MATCH_DURATION_MS };
