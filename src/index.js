@@ -40,9 +40,9 @@ const start = async () => {
 
     logger.info('Matchmaking worker started');
 
-    httpServer.listen(PORT, () => {
-      logger.info(`Server + Socket.io running on port ${PORT} [${process.env.NODE_ENV}]`);
-    });
+    httpServer.listen(PORT, '0.0.0.0', () => {
+  logger.info(`Server + Socket.io running on port ${PORT} [${process.env.NODE_ENV}]`);
+});
 
     const shutdown = async (signal) => {
       logger.info(`${signal} received. Shutting down...`);
