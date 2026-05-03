@@ -8,7 +8,7 @@ const { tryCreateMatch } = require('./socket/matchmakingHandler');
 const logger = require('./utils/logger');
 
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8080;
 
 const ENTRY_FEES = [10, 25, 50, 100, 200, 500];
 
