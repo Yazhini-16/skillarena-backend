@@ -34,7 +34,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-app.options('*', cors());
+app.options('/(.*)', cors());
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '10kb' }));
