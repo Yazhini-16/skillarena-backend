@@ -8,10 +8,12 @@ const app = express();
 
 app.use(helmet());
 
-app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
-  credentials: true,
-}));
+// app.js
+const allowedOrigins = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL]
+  : ['http://localhost:3000', 'http://localhost:3001'];
+
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 
 // Raw body for webhook — must come BEFORE express.json()
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));

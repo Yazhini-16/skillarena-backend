@@ -104,5 +104,15 @@ const getIO = () => {
   if (!io) throw new Error('Socket.io not initialized');
   return io;
 };
+// socket/index.js
+const allowedOrigins = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL]
+  : ['http://localhost:3000', 'http://localhost:3001'];
 
+io = new Server(httpServer, {
+  cors: { origin: allowedOrigins, credentials: true, methods: ['GET', 'POST'] },
+  pingTimeout: 20000,
+  pingInterval: 10000,
+  transports: ['websocket', 'polling'],
+});
 module.exports = { initSocket, getIO };

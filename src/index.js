@@ -11,6 +11,18 @@ const logger = require('./utils/logger');
 const PORT = process.env.PORT || 8080;
 
 const ENTRY_FEES = [10, 25, 50, 100, 200, 500];
+io = new Server(httpServer, {
+  cors: {
+    origin: process.env.NODE_ENV === 'production'
+      ? ['https://skillarena-frontend-one.vercel.app/']
+      : ['http://localhost:3000', 'http://localhost:3001'],
+    credentials: true,
+    methods: ['GET', 'POST'],
+  },
+  pingTimeout: 20000,
+  pingInterval: 10000,
+  transports: ['websocket', 'polling'],
+});
 
 const start = async () => {
   try {
