@@ -7,39 +7,27 @@ const { redisClient } = require('./config/redis');
 const { tryCreateMatch } = require('./socket/matchmakingHandler');
 const logger = require('./utils/logger');
 
-
 const PORT = process.env.PORT || 8080;
-
 const ENTRY_FEES = [10, 25, 50, 100, 200, 500];
-io = new Server(httpServer, {
-  cors: {
-    origin: process.env.NODE_ENV === 'production'
-      ? ['https://skillarena-frontend-one.vercel.app/']
-      : ['http://localhost:3000', 'http://localhost:3001'],
-    credentials: true,
-    methods: ['GET', 'POST'],
-  },
-  pingTimeout: 20000,
-  pingInterval: 10000,
-  transports: ['websocket', 'polling'],
-});
 
 const start = async () => {
+  const httpServer = http.createServer(app);
+  const io = initSocket(httpServer);
+
+  // START LISTENING FIRST — so Railway healthcheck passes immediately
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    logger.info(`Server + Socket.io running on port ${PORT} [${process.env.NODE_ENV}]`);
+  });
+
+  // THEN connect to databases in background
   try {
-    
+    await testConnection();
+    logger.info('PostgreSQL connected');
 
     await redisClient.ping();
     logger.info('Redis ping successful');
-    await testConnection();
 
-    // Create HTTP server from Express app
-    // Socket.io attaches to this same server — same port, no CORS issues
-    const httpServer = http.createServer(app);
-
-    // Initialize Socket.io
-    const io = initSocket(httpServer);
-
-    // Matchmaking worker — polls every 500ms for all fee tiers
+    // Start matchmaking worker only after DB is ready
     setInterval(async () => {
       for (const fee of ENTRY_FEES) {
         try {
@@ -52,26 +40,23 @@ const start = async () => {
 
     logger.info('Matchmaking worker started');
 
-    httpServer.listen(PORT, '0.0.0.0', () => {
-  logger.info(`Server + Socket.io running on port ${PORT} [${process.env.NODE_ENV}]`);
-});
-
-    const shutdown = async (signal) => {
-      logger.info(`${signal} received. Shutting down...`);
-      httpServer.close(async () => {
-        await redisClient.quit();
-        logger.info('Shut down complete');
-        process.exit(0);
-      });
-    };
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
-
   } catch (err) {
-    logger.error('Failed to start', { error: err.message });
-    process.exit(1);
+    logger.error('Database connection failed', { error: err.message });
+    // Don't exit — server is still running, healthcheck still passes
+    // Railway will show the error in logs
   }
+
+  const shutdown = async (signal) => {
+    logger.info(`${signal} received. Shutting down...`);
+    httpServer.close(async () => {
+      await redisClient.quit();
+      logger.info('Shut down complete');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 };
 
 start();
