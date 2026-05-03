@@ -28,7 +28,16 @@ app.use('/api/wallet', require('./routes/wallet'));
 app.use('/api/matches', require('./routes/match'));
 app.use('/api/payments', require('./routes/payment'));
 
+
+
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
 app.use(errorHandler);
+
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Backend is running'
+  });
+});
 
 module.exports = app;
