@@ -8,9 +8,16 @@ const logger = require('../utils/logger');
 let io;
 
 const initSocket = (httpServer) => {
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://skillarena-frontend-one.vercel.app',
+    process.env.FRONTEND_URL,
+  ].filter(Boolean);
+
   io = new Server(httpServer, {
     cors: {
-      origin: ['http://localhost:3000', 'http://localhost:3001'],
+      origin: allowedOrigins,
       credentials: true,
       methods: ['GET', 'POST'],
     },
@@ -104,21 +111,5 @@ const getIO = () => {
   if (!io) throw new Error('Socket.io not initialized');
   return io;
 };
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'https://skillarena-frontend-one.vercel.app',
-  process.env.FRONTEND_URL,
-].filter(Boolean);
 
-io = new Server(httpServer, {
-  cors: {
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ['GET', 'POST'],
-  },
-  pingTimeout: 20000,
-  pingInterval: 10000,
-  transports: ['websocket', 'polling'],
-});
 module.exports = { initSocket, getIO };
