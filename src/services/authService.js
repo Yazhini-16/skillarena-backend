@@ -66,13 +66,14 @@ const login = async ({ email, password }) => {
 
 const getProfile = async (userId) => {
   const result = await pool.query(
-    `SELECT u.id, u.username, u.email, u.skill_rating, u.matches_played,
-            u.matches_won, u.avatar_url, u.created_at,
-            w.balance, w.locked_balance
-     FROM users u
-     LEFT JOIN wallets w ON w.user_id = u.id
-     WHERE u.id = $1`,
-    [userId]
+     `SELECT u.id, u.username, u.email, u.skill_rating, u.matches_played,
+          u.matches_won, u.avatar_url, u.created_at,
+          u.hearts, u.hearts_reset_at, u.consecutive_losses, u.is_premium,
+          w.balance, w.locked_balance
+   FROM users u
+   LEFT JOIN wallets w ON w.user_id = u.id
+   WHERE u.id = $1`,
+  [userId]
   );
   if (!result.rows[0]) throw { statusCode: 404, message: 'User not found' };
   return result.rows[0];

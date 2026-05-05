@@ -12,6 +12,36 @@ const matchmakingHandler = (io, socket) => {
   const { id: userId, username } = socket.user;
 
   socket.on('queue:join', async ({ entryFee }) => {
+
+    // Check hearts before allowing queue join
+const heartsResult = await pool.query(
+  `SELECT hearts, hearts_reset_at, is_premium FROM users WHERE id = $1`,
+  [userId]
+);
+const userData = heartsResult.rows[0];
+
+if (!userData.is_premium) {
+  // Check if hearts have reset after 24 hours
+  if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
+    // Reset hearts
+    await pool.query(
+      `UPDATE users SET hearts = 3, hearts_reset_at = NULL, consecutive_losses = 0 WHERE id = $1`,
+      [userId]
+    );
+  } else if (userData.hearts <= 0) {
+    const resetTime = new Date(userData.hearts_reset_at);
+    const hoursLeft = Math.ceil((resetTime - Date.now()) / (1000 * 60 * 60));
+    return socket.emit('queue:error', {
+      message: `No hearts remaining. You can play again in ${hoursLeft} hours, or upgrade to Premium.`,
+      heartsEmpty: true,
+      resetAt: userData.hearts_reset_at,
+    });
+  }
+}
+
+
+
+
     console.log(`SERVER: queue:join received from ${userId} with fee ${entryFee}`);
     try {
       if (!VALID_FEES.includes(Number(entryFee))) {

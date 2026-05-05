@@ -34,6 +34,32 @@ const matchHandler = (io, socket) => {
       logger.error('match:join error', { userId, error: err.message });
     }
   });
+  
+// ── match:forfeit_request ─────────────────────────────────────
+  socket.on('match:forfeit_request', async ({ matchId, reason }) => {
+  try {
+    const matchStateRaw = await redisClient.get(`match:${matchId}:state`);
+    if (!matchStateRaw) return;
+    const matchState = JSON.parse(matchStateRaw);
+    if (matchState.status !== 'IN_PROGRESS') return;
+
+    const winnerId = matchState.playerAId === userId
+      ? matchState.playerBId
+      : matchState.playerAId;
+
+    io.to(`match:${matchId}`).emit('match:forfeit', {
+      matchId, forfeitedBy: userId,
+      winnerId, reason,
+      message: reason === 'tab_switch'
+        ? 'Opponent forfeited — tab switching detected'
+        : 'Opponent forfeited',
+    });
+
+    await resolveMatch(io, matchId, winnerId, userId, 'FORFEIT');
+  } catch (err) {
+    logger.error('forfeit_request error', { userId, matchId, error: err.message });
+  }
+});
 
   // ── match:timer_request ────────────────────────────────────────
   socket.on('match:timer_request', async ({ matchId }) => {
@@ -460,6 +486,40 @@ const resolveMatch = async (io, matchId, winnerId, loserId, resolveType = 'COMPL
     }
   }
 };
+
+
+// Update hearts for loser
+const loserResult = await pool.query(
+  `SELECT consecutive_losses, hearts, is_premium FROM users WHERE id = $1`,
+  [loserId]
+);
+const loser = loserResult.rows[0];
+const newConsecutiveLosses = (loser.consecutive_losses || 0) + 1;
+
+if (!loser.is_premium) {
+  const newHearts = Math.max(0, (loser.hearts || 3) - 1);
+  const heartsResetAt = newConsecutiveLosses >= 3
+    ? new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours from now
+    : null;
+
+  await pool.query(
+    `UPDATE users SET
+       consecutive_losses = $1,
+       hearts = $2,
+       hearts_reset_at = COALESCE($3, hearts_reset_at)
+     WHERE id = $4`,
+    [newConsecutiveLosses, newHearts, heartsResetAt, loserId]
+  );
+}
+
+// Reset winner's consecutive losses and restore a heart (max 3)
+await pool.query(
+  `UPDATE users SET
+     consecutive_losses = 0,
+     hearts = LEAST(hearts + 1, 3)
+   WHERE id = $1`,
+  [winnerId]
+);
 
 // Export resolveMatch so socket/index.js can call it for forfeit
 module.exports = matchHandler;
