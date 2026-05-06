@@ -11,41 +11,8 @@ const VALID_FEES = [10, 25, 50, 100, 200, 500];
 const matchmakingHandler = (io, socket) => {
   const { id: userId, username } = socket.user;
 
-  socket.on('queue:join', async ({ entryFee }) => {
-
-    // Check hearts before allowing queue join
-const heartsResult = await pool.query(
-  `SELECT hearts, hearts_reset_at, is_premium FROM users WHERE id = $1`,
-  [userId]
-);
-const userData = heartsResult.rows[0];
-
-const { entryFee, category = 'all' } = data; // destructure category from socket event
-await redisClient.set(`user:${userId}:category`, category, 'EX', 120);
-
-if (!userData.is_premium) {
-  // Check if hearts have reset after 24 hours
-  if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
-    // Reset hearts
-    await pool.query(
-      `UPDATE users SET hearts = 3, hearts_reset_at = NULL, consecutive_losses = 0 WHERE id = $1`,
-      [userId]
-    );
-  } else if (userData.hearts <= 0) {
-    const resetTime = new Date(userData.hearts_reset_at);
-    const hoursLeft = Math.ceil((resetTime - Date.now()) / (1000 * 60 * 60));
-    return socket.emit('queue:error', {
-      message: `No hearts remaining. You can play again in ${hoursLeft} hours, or upgrade to Premium.`,
-      heartsEmpty: true,
-      resetAt: userData.hearts_reset_at,
-    });
-  }
-}
-
-
-
-
-    console.log(`SERVER: queue:join received from ${userId} with fee ${entryFee}`);
+  socket.on('queue:join', async ({ entryFee, category = 'all' }) => {
+    console.log(`SERVER: queue:join received from ${userId} with fee ${entryFee} category ${category}`);
     try {
       if (!VALID_FEES.includes(Number(entryFee))) {
         return socket.emit('queue:error', { message: `Invalid entry fee. Valid: ${VALID_FEES.join(', ')}` });
@@ -54,6 +21,31 @@ if (!userData.is_premium) {
       const existingQueue = await redisClient.get(`user:${userId}:queue`);
       if (existingQueue) {
         return socket.emit('queue:error', { message: 'You are already in a queue' });
+      }
+
+      // Check hearts before allowing queue join
+      const heartsResult = await pool.query(
+        `SELECT hearts, hearts_reset_at, is_premium FROM users WHERE id = $1`,
+        [userId]
+      );
+      const userData = heartsResult.rows[0];
+
+      if (userData && !userData.is_premium) {
+        if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
+          // Hearts have reset after 24 hours — restore them
+          await pool.query(
+            `UPDATE users SET hearts = 3, hearts_reset_at = NULL, consecutive_losses = 0 WHERE id = $1`,
+            [userId]
+          );
+        } else if ((userData.hearts ?? 3) <= 0) {
+          const resetTime = new Date(userData.hearts_reset_at);
+          const hoursLeft = Math.ceil((resetTime - Date.now()) / (1000 * 60 * 60));
+          return socket.emit('queue:error', {
+            message: `No hearts remaining. You can play again in ${hoursLeft} hour(s), or upgrade to Premium.`,
+            heartsEmpty: true,
+            resetAt: userData.hearts_reset_at,
+          });
+        }
       }
 
       const walletResult = await pool.query(
@@ -67,6 +59,7 @@ if (!userData.is_premium) {
       await redisClient.zadd(`queue:${entryFee}`, timestamp, userId);
       await redisClient.set(`user:${userId}:queue`, entryFee, 'EX', 120);
       await redisClient.set(`user:${userId}:username`, username, 'EX', 120);
+      await redisClient.set(`user:${userId}:category`, category, 'EX', 120);
 
       const rank = await redisClient.zrank(`queue:${entryFee}`, userId);
 
@@ -76,7 +69,7 @@ if (!userData.is_premium) {
         message: 'Looking for opponent...',
       });
 
-      logger.info('User joined queue', { userId, username, entryFee });
+      logger.info('User joined queue', { userId, username, entryFee, category });
       await tryCreateMatch(io, entryFee);
 
     } catch (err) {
@@ -94,6 +87,7 @@ if (!userData.is_premium) {
       await redisClient.zrem(`queue:${queueFee}`, userId);
       await redisClient.del(`user:${userId}:queue`);
       await redisClient.del(`user:${userId}:username`);
+      await redisClient.del(`user:${userId}:category`);
       socket.emit('queue:left', { message: 'Left the queue' });
     } catch (err) {
       logger.error('queue:leave error', { userId, error: err.message });
@@ -101,7 +95,7 @@ if (!userData.is_premium) {
   });
 };
 
-const tryCreateMatch = async (io, entryFee, category = 'all') => {
+const tryCreateMatch = async (io, entryFee) => {
   const queueKey = `queue:${entryFee}`;
 
   const queueLength = await redisClient.zcard(queueKey);
@@ -118,32 +112,40 @@ const tryCreateMatch = async (io, entryFee, category = 'all') => {
   await redisClient.del(`user:${playerAId}:queue`);
   await redisClient.del(`user:${playerBId}:queue`);
 
-  // Pick problem based on fee tier
+  // Get category preference from player A
+  const categoryA = await redisClient.get(`user:${playerAId}:category`) || 'all';
+
+  // Pick problem based on fee tier and category
   const difficulty = entryFee <= 25 ? 'easy' : entryFee <= 100 ? 'medium' : 'hard';
 
-  const problemResult = await pool.query(
-    `SELECT id, title, description, time_limit_seconds, test_cases
-     FROM problems
-     WHERE difficulty = $1 AND is_active = true
-     ORDER BY RANDOM()
-     LIMIT 1`,
-    [difficulty]
-  );
+  const problemQuery = categoryA !== 'all'
+    ? `SELECT id, title, description, time_limit_seconds, test_cases
+       FROM problems
+       WHERE difficulty = $1 AND is_active = true AND category = $2
+       ORDER BY RANDOM() LIMIT 1`
+    : `SELECT id, title, description, time_limit_seconds, test_cases
+       FROM problems
+       WHERE difficulty = $1 AND is_active = true
+       ORDER BY RANDOM() LIMIT 1`;
 
-  // Guard: no problem found — put players back in queue and abort
+  const problemParams = categoryA !== 'all'
+    ? [difficulty, categoryA]
+    : [difficulty];
+
+  const problemResult = await pool.query(problemQuery, problemParams);
+
+  // Guard: no problem found — put players back and abort
   if (!problemResult.rows[0]) {
-    logger.error('No problems found for difficulty — aborting match', { difficulty, entryFee });
+    logger.error('No problems found', { difficulty, category: categoryA, entryFee });
     await redisClient.zadd(queueKey, Date.now(), playerAId);
     await redisClient.zadd(queueKey, Date.now(), playerBId);
     await redisClient.set(`user:${playerAId}:queue`, entryFee, 'EX', 120);
     await redisClient.set(`user:${playerBId}:queue`, entryFee, 'EX', 120);
-
-    // Notify both players
     io.to(`user:${playerAId}`).emit('queue:error', {
-      message: 'No problems available right now. Please try again.',
+      message: 'No problems available for this category. Try a different one.',
     });
     io.to(`user:${playerBId}`).emit('queue:error', {
-      message: 'No problems available right now. Please try again.',
+      message: 'No problems available for this category. Try a different one.',
     });
     return null;
   }
@@ -192,9 +194,6 @@ const tryCreateMatch = async (io, entryFee, category = 'all') => {
   const playerAUsername = await redisClient.get(`user:${playerAId}:username`) || 'Player A';
   const playerBUsername = await redisClient.get(`user:${playerBId}:username`) || 'Player B';
 
-  const categoryA = await redisClient.get(`user:${playerAId}:category`) || 'all';
-const category = categoryA; // use player A's preference
-
   // Only send public test cases to clients
   const publicTestCases = problem.test_cases
     ? problem.test_cases.filter(tc => tc.is_public)
@@ -218,24 +217,7 @@ const category = categoryA; // use player A's preference
     },
   };
 
-   const problemQuery = category && category !== 'all'
-    ? `SELECT id, title, description, time_limit_seconds, test_cases
-       FROM problems
-       WHERE difficulty = $1 AND is_active = true AND category = $2
-       ORDER BY RANDOM() LIMIT 1`
-    : `SELECT id, title, description, time_limit_seconds, test_cases
-       FROM problems
-       WHERE difficulty = $1 AND is_active = true
-       ORDER BY RANDOM() LIMIT 1`;
-
-  const problemParams = category && category !== 'all'
-    ? [difficulty, category]
-    : [difficulty];
-
-  // Updated problem query
-  const problemResult = await pool.query(problemQuery, problemParams);
-
-  // Emit match:ready to both players with their own perspective
+  // Emit match:ready to both players
   io.to(`user:${playerAId}`).emit('match:ready', {
     ...matchPayload,
     you: { id: playerAId, username: playerAUsername },
@@ -250,7 +232,7 @@ const category = categoryA; // use player A's preference
 
   logger.info('Match created and broadcasted', {
     matchId, playerAId, playerBId, entryFee,
-    problem: problem.title, difficulty,
+    problem: problem.title, difficulty, category: categoryA,
   });
 
   // Schedule auto-resolve when timer expires
@@ -285,7 +267,6 @@ const handleTimerExpiry = async (io, matchId) => {
       winnerId = matchState.playerBId;
       loserId = matchState.playerAId;
     } else {
-      // Tiebreak by submission time — if neither submitted, playerA wins by default
       if (timeA === 999999 && timeB === 999999) {
         winnerId = matchState.playerAId;
         loserId = matchState.playerBId;
