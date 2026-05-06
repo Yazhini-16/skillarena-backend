@@ -20,6 +20,9 @@ const heartsResult = await pool.query(
 );
 const userData = heartsResult.rows[0];
 
+const { entryFee, category = 'all' } = data; // destructure category from socket event
+await redisClient.set(`user:${userId}:category`, category, 'EX', 120);
+
 if (!userData.is_premium) {
   // Check if hearts have reset after 24 hours
   if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
@@ -98,7 +101,7 @@ if (!userData.is_premium) {
   });
 };
 
-const tryCreateMatch = async (io, entryFee) => {
+const tryCreateMatch = async (io, entryFee, category = 'all') => {
   const queueKey = `queue:${entryFee}`;
 
   const queueLength = await redisClient.zcard(queueKey);
@@ -189,6 +192,9 @@ const tryCreateMatch = async (io, entryFee) => {
   const playerAUsername = await redisClient.get(`user:${playerAId}:username`) || 'Player A';
   const playerBUsername = await redisClient.get(`user:${playerBId}:username`) || 'Player B';
 
+  const categoryA = await redisClient.get(`user:${playerAId}:category`) || 'all';
+const category = categoryA; // use player A's preference
+
   // Only send public test cases to clients
   const publicTestCases = problem.test_cases
     ? problem.test_cases.filter(tc => tc.is_public)
@@ -211,6 +217,23 @@ const tryCreateMatch = async (io, entryFee) => {
       testCases: publicTestCases,
     },
   };
+
+   const problemQuery = category && category !== 'all'
+    ? `SELECT id, title, description, time_limit_seconds, test_cases
+       FROM problems
+       WHERE difficulty = $1 AND is_active = true AND category = $2
+       ORDER BY RANDOM() LIMIT 1`
+    : `SELECT id, title, description, time_limit_seconds, test_cases
+       FROM problems
+       WHERE difficulty = $1 AND is_active = true
+       ORDER BY RANDOM() LIMIT 1`;
+
+  const problemParams = category && category !== 'all'
+    ? [difficulty, category]
+    : [difficulty];
+
+  // Updated problem query
+  const problemResult = await pool.query(problemQuery, problemParams);
 
   // Emit match:ready to both players with their own perspective
   io.to(`user:${playerAId}`).emit('match:ready', {
