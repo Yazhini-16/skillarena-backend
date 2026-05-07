@@ -24,13 +24,21 @@ const initSocket = (httpServer) => {
     pingTimeout: 20000,
     pingInterval: 10000,
     transports: ['websocket', 'polling'],
+    // Allow upgrade from polling to websocket
+    allowUpgrades: true,
   });
 
+  // JWT auth middleware
   io.use((socket, next) => {
     try {
-      const token = socket.handshake.auth?.token
-        || socket.handshake.headers?.authorization?.split(' ')[1];
-      if (!token) return next(new Error('Authentication required'));
+      const token =
+        socket.handshake.auth?.token ||
+        socket.handshake.headers?.authorization?.split(' ')[1];
+
+      if (!token) {
+        return next(new Error('Authentication required'));
+      }
+
       const decoded = verifyToken(token);
       socket.user = decoded;
       next();
@@ -44,25 +52,38 @@ const initSocket = (httpServer) => {
     const { id: userId, username } = socket.user;
     logger.info('Socket connected', { userId, username, socketId: socket.id });
 
+    // Update presence — always use latest socket ID
     await redisClient.set(`presence:${userId}`, socket.id, 'EX', 3600);
+
+    // Personal room for direct messages
     socket.join(`user:${userId}`);
 
+    // Register all event handlers fresh on every connection
     matchmakingHandler(io, socket);
     matchHandler(io, socket);
 
     socket.on('disconnect', async (reason) => {
       logger.info('Socket disconnected', { userId, username, reason });
-      await redisClient.del(`presence:${userId}`);
 
-      const activeMatchId = await redisClient.get(`user:${userId}:active_match`);
-      if (activeMatchId) {
-        await handleDisconnectForfeit(io, userId, activeMatchId);
+      // Only remove presence if this socket is still the current one
+      const currentSocketId = await redisClient.get(`presence:${userId}`);
+      if (currentSocketId === socket.id) {
+        await redisClient.del(`presence:${userId}`);
       }
 
+      // Handle active match disconnect
+      const activeMatchId = await redisClient.get(`user:${userId}:active_match`);
+      if (activeMatchId) {
+        handleDisconnectForfeit(io, userId, activeMatchId);
+      }
+
+      // Remove from queue if they were in one
       const queueFee = await redisClient.get(`user:${userId}:queue`);
       if (queueFee) {
         await redisClient.zrem(`queue:${queueFee}`, userId);
         await redisClient.del(`user:${userId}:queue`);
+        await redisClient.del(`user:${userId}:category`);
+        logger.info('Removed disconnected user from queue', { userId });
       }
     });
 
@@ -76,10 +97,11 @@ const initSocket = (httpServer) => {
 
 const handleDisconnectForfeit = async (io, disconnectedUserId, matchId) => {
   try {
+    // Wait 15 seconds to see if player reconnects
     await new Promise(resolve => setTimeout(resolve, 15000));
 
     const currentSocketId = await redisClient.get(`presence:${disconnectedUserId}`);
-    if (currentSocketId) return;
+    if (currentSocketId) return; // reconnected
 
     const matchStateRaw = await redisClient.get(`match:${matchId}:state`);
     if (!matchStateRaw) return;

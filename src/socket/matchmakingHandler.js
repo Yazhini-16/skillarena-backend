@@ -12,6 +12,7 @@ const matchmakingHandler = (io, socket) => {
   const { id: userId, username } = socket.user;
 
   socket.on('queue:join', async ({ entryFee, category = 'all' }) => {
+    console.log(`SERVER RECEIVED queue:join: userId=${userId} fee=${entryFee} socketId=${socket.id}`);
     console.log(`SERVER: queue:join received from ${userId} with fee ${entryFee} category ${category}`);
     try {
       if (!VALID_FEES.includes(Number(entryFee))) {
