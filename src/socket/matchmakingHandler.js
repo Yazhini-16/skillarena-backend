@@ -109,10 +109,20 @@ const matchmakingHandler = (io, socket) => {
 const tryCreateMatch = async (io, entryFee) => {
   const queueKey = `queue:${entryFee}`;
 
+   const keyType = await redisClient.type(queueKey);
+  if (keyType !== 'none' && keyType !== 'zset') {
+    console.warn(`WORKER: queue key ${queueKey} has wrong type ${keyType} — deleting`);
+    await redisClient.del(queueKey);
+    return null;
+  }
+
   const queueLength = await redisClient.zcard(queueKey);
+  console.log(`WORKER: fee=${entryFee} queueLength=${queueLength}`); // ADD THIS
+
   if (queueLength < 2) return null;
 
   const players = await redisClient.zrange(queueKey, 0, 1);
+  console.log(`WORKER: players found:`, players); // ADD THIS
   if (!players || players.length < 2) return null;
 
   const [playerAId, playerBId] = players;

@@ -35,14 +35,17 @@ const start = async () => {
   const { tryCreateMatch } = require('./socket/matchmakingHandler');
 
   const worker = setInterval(async () => {
-    for (const fee of ENTRY_FEES) {
-      try {
-        await tryCreateMatch(io, fee);
-      } catch (err) {
-        logger.error('Matchmaking worker error', { fee, error: err.message });
+  for (const fee of ENTRY_FEES) {
+    try {
+      const result = await tryCreateMatch(io, fee);
+      if (result) {
+        console.log(`WORKER: Match created for fee ${fee}: ${result}`);
       }
+    } catch (err) {
+      console.error(`WORKER ERROR fee=${fee}:`, err.message, err.stack);
     }
-  }, 500);
+  }
+}, 500);
 
   logger.info('Matchmaking worker started');
 
