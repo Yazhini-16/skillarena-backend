@@ -15,41 +15,51 @@ const matchmakingHandler = (io, socket) => {
     console.log(`SERVER: queue:join received from ${userId} with fee ${entryFee} category ${category}`);
     try {
       if (!VALID_FEES.includes(Number(entryFee))) {
-        return socket.emit('queue:error', { message: `Invalid entry fee. Valid: ${VALID_FEES.join(', ')}` });
+        return socket.emit('queue:error', {
+          message: `Invalid entry fee. Valid: ${VALID_FEES.join(', ')}`,
+        });
       }
 
       const existingQueue = await redisClient.get(`user:${userId}:queue`);
       if (existingQueue) {
-        return socket.emit('queue:error', { message: 'You are already in a queue' });
+        // Clear stale queue entry — don't block the user
+        await redisClient.zrem(`queue:${existingQueue}`, userId);
+        await redisClient.del(`user:${userId}:queue`);
       }
 
-      // Check hearts before allowing queue join
-      const heartsResult = await pool.query(
-        `SELECT hearts, hearts_reset_at, is_premium FROM users WHERE id = $1`,
-        [userId]
-      );
-      const userData = heartsResult.rows[0];
+      // Check hearts
+      try {
+        const heartsResult = await pool.query(
+          `SELECT hearts, hearts_reset_at, is_premium FROM users WHERE id = $1`,
+          [userId]
+        );
+        const userData = heartsResult.rows[0];
 
-      if (userData && !userData.is_premium) {
-        if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
-          // Hearts have reset after 24 hours — restore them
-          await pool.query(
-            `UPDATE users SET hearts = 3, hearts_reset_at = NULL, consecutive_losses = 0 WHERE id = $1`,
-            [userId]
-          );
-        } else if ((userData.hearts ?? 3) <= 0) {
-          const resetTime = new Date(userData.hearts_reset_at);
-          const hoursLeft = Math.ceil((resetTime - Date.now()) / (1000 * 60 * 60));
-          return socket.emit('queue:error', {
-            message: `No hearts remaining. You can play again in ${hoursLeft} hour(s), or upgrade to Premium.`,
-            heartsEmpty: true,
-            resetAt: userData.hearts_reset_at,
-          });
+        if (userData && !userData.is_premium) {
+          if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
+            await pool.query(
+              `UPDATE users SET hearts = 3, hearts_reset_at = NULL, consecutive_losses = 0 WHERE id = $1`,
+              [userId]
+            );
+          } else if ((userData.hearts ?? 3) <= 0) {
+            const resetTime = new Date(userData.hearts_reset_at);
+            const hoursLeft = Math.ceil((resetTime - Date.now()) / (1000 * 60 * 60));
+            return socket.emit('queue:error', {
+              message: `No hearts remaining. Play again in ${hoursLeft} hour(s).`,
+              heartsEmpty: true,
+              resetAt: userData.hearts_reset_at,
+            });
+          }
         }
+      } catch (heartsErr) {
+        // Don't block queue join if hearts check fails
+        logger.warn('Hearts check failed', { userId, error: heartsErr.message });
       }
 
+      // Check wallet balance
       const walletResult = await pool.query(
-        'SELECT balance FROM wallets WHERE user_id = $1', [userId]
+        'SELECT balance FROM wallets WHERE user_id = $1',
+        [userId]
       );
       if (!walletResult.rows[0] || parseFloat(walletResult.rows[0].balance) < entryFee) {
         return socket.emit('queue:error', { message: 'Insufficient balance' });
@@ -57,7 +67,7 @@ const matchmakingHandler = (io, socket) => {
 
       const timestamp = Date.now();
       await redisClient.zadd(`queue:${entryFee}`, timestamp, userId);
-      await redisClient.set(`user:${userId}:queue`, entryFee, 'EX', 120);
+      await redisClient.set(`user:${userId}:queue`, String(entryFee), 'EX', 120);
       await redisClient.set(`user:${userId}:username`, username, 'EX', 120);
       await redisClient.set(`user:${userId}:category`, category, 'EX', 120);
 
@@ -65,11 +75,13 @@ const matchmakingHandler = (io, socket) => {
 
       socket.emit('queue:joined', {
         entryFee,
-        position: rank + 1,
+        position: (rank ?? 0) + 1,
         message: 'Looking for opponent...',
       });
 
       logger.info('User joined queue', { userId, username, entryFee, category });
+
+      // Try to create match immediately
       await tryCreateMatch(io, entryFee);
 
     } catch (err) {
@@ -81,11 +93,10 @@ const matchmakingHandler = (io, socket) => {
   socket.on('queue:leave', async () => {
     try {
       const queueFee = await redisClient.get(`user:${userId}:queue`);
-      if (!queueFee) {
-        return socket.emit('queue:error', { message: 'You are not in a queue' });
+      if (queueFee) {
+        await redisClient.zrem(`queue:${queueFee}`, userId);
+        await redisClient.del(`user:${userId}:queue`);
       }
-      await redisClient.zrem(`queue:${queueFee}`, userId);
-      await redisClient.del(`user:${userId}:queue`);
       await redisClient.del(`user:${userId}:username`);
       await redisClient.del(`user:${userId}:category`);
       socket.emit('queue:left', { message: 'Left the queue' });
@@ -102,22 +113,29 @@ const tryCreateMatch = async (io, entryFee) => {
   if (queueLength < 2) return null;
 
   const players = await redisClient.zrange(queueKey, 0, 1);
-  if (players.length < 2) return null;
+  if (!players || players.length < 2) return null;
 
   const [playerAId, playerBId] = players;
 
-  // Remove from queue immediately
+  // Prevent matching a player with themselves
+  if (playerAId === playerBId) {
+    await redisClient.zrem(queueKey, playerAId);
+    return null;
+  }
+
+  // Remove from queue immediately to prevent double matching
   await redisClient.zrem(queueKey, playerAId);
   await redisClient.zrem(queueKey, playerBId);
   await redisClient.del(`user:${playerAId}:queue`);
   await redisClient.del(`user:${playerBId}:queue`);
 
-  // Get category preference from player A
+  // Get category preference
   const categoryA = await redisClient.get(`user:${playerAId}:category`) || 'all';
 
-  // Pick problem based on fee tier and category
+  // Pick difficulty based on entry fee
   const difficulty = entryFee <= 25 ? 'easy' : entryFee <= 100 ? 'medium' : 'hard';
 
+  // Build problem query
   const problemQuery = categoryA !== 'all'
     ? `SELECT id, title, description, time_limit_seconds, test_cases
        FROM problems
@@ -134,44 +152,54 @@ const tryCreateMatch = async (io, entryFee) => {
 
   const problemResult = await pool.query(problemQuery, problemParams);
 
-  // Guard: no problem found — put players back and abort
+  // No problem found — put players back and abort
   if (!problemResult.rows[0]) {
-    logger.error('No problems found', { difficulty, category: categoryA, entryFee });
+    logger.error('No problems found', { difficulty, category: categoryA });
     await redisClient.zadd(queueKey, Date.now(), playerAId);
     await redisClient.zadd(queueKey, Date.now(), playerBId);
-    await redisClient.set(`user:${playerAId}:queue`, entryFee, 'EX', 120);
-    await redisClient.set(`user:${playerBId}:queue`, entryFee, 'EX', 120);
+    await redisClient.set(`user:${playerAId}:queue`, String(entryFee), 'EX', 120);
+    await redisClient.set(`user:${playerBId}:queue`, String(entryFee), 'EX', 120);
     io.to(`user:${playerAId}`).emit('queue:error', {
-      message: 'No problems available for this category. Try a different one.',
+      message: 'No problems available for this category. Try "All".',
     });
     io.to(`user:${playerBId}`).emit('queue:error', {
-      message: 'No problems available for this category. Try a different one.',
+      message: 'No problems available for this category. Try "All".',
     });
     return null;
   }
 
   const problem = problemResult.rows[0];
-
   const matchId = uuidv4();
   const platformFeePercent = parseFloat(process.env.PLATFORM_FEE_PERCENT || 10) / 100;
   const prizePool = parseFloat(entryFee) * 2 * (1 - platformFeePercent);
   const platformFee = parseFloat(entryFee) * 2 * platformFeePercent;
 
   // Create match + lock funds atomically
-  await withTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO matches (id, player_a_id, player_b_id, problem_id, entry_fee, prize_pool, platform_fee, status, started_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'IN_PROGRESS', NOW())`,
-      [matchId, playerAId, playerBId, problem.id, entryFee, prizePool, platformFee]
-    );
-    await lockFundsForMatch(playerAId, parseFloat(entryFee), matchId, client);
-    await lockFundsForMatch(playerBId, parseFloat(entryFee), matchId, client);
-  });
+  try {
+    await withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO matches
+           (id, player_a_id, player_b_id, problem_id, entry_fee, prize_pool, platform_fee, status, started_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'IN_PROGRESS', NOW())`,
+        [matchId, playerAId, playerBId, problem.id, entryFee, prizePool, platformFee]
+      );
+      await lockFundsForMatch(playerAId, parseFloat(entryFee), matchId, client);
+      await lockFundsForMatch(playerBId, parseFloat(entryFee), matchId, client);
+    });
+  } catch (txErr) {
+    logger.error('Match transaction failed', { error: txErr.message });
+    // Refund queue positions
+    await redisClient.zadd(queueKey, Date.now(), playerAId);
+    await redisClient.zadd(queueKey, Date.now(), playerBId);
+    await redisClient.set(`user:${playerAId}:queue`, String(entryFee), 'EX', 120);
+    await redisClient.set(`user:${playerBId}:queue`, String(entryFee), 'EX', 120);
+    return null;
+  }
 
-  // Start server-authoritative timer
+  // Start timer
   const timer = await startMatchTimer(matchId);
 
-  // Store match state in Redis
+  // Store match state
   const matchState = {
     matchId,
     playerAId,
@@ -184,17 +212,18 @@ const tryCreateMatch = async (io, entryFee) => {
     playerASubmitted: false,
     playerBSubmitted: false,
   };
-  await redisClient.set(`match:${matchId}:state`, JSON.stringify(matchState), 'EX', 7200);
+  await redisClient.set(
+    `match:${matchId}:state`,
+    JSON.stringify(matchState),
+    'EX', 7200
+  );
 
-  // Track active match per player
   await setActiveMatch(playerAId, matchId);
   await setActiveMatch(playerBId, matchId);
 
-  // Get usernames
   const playerAUsername = await redisClient.get(`user:${playerAId}:username`) || 'Player A';
   const playerBUsername = await redisClient.get(`user:${playerBId}:username`) || 'Player B';
 
-  // Only send public test cases to clients
   const publicTestCases = problem.test_cases
     ? problem.test_cases.filter(tc => tc.is_public)
     : [];
@@ -235,7 +264,33 @@ const tryCreateMatch = async (io, entryFee) => {
     problem: problem.title, difficulty, category: categoryA,
   });
 
-  // Schedule auto-resolve when timer expires
+  // Force-join both players to match room using their socket connections
+  setTimeout(async () => {
+    try {
+      const socketIdA = await redisClient.get(`presence:${playerAId}`);
+      const socketIdB = await redisClient.get(`presence:${playerBId}`);
+
+      if (socketIdA) {
+        const socketA = io.sockets.sockets.get(socketIdA);
+        if (socketA) {
+          socketA.join(`match:${matchId}`);
+          logger.info('Force-joined playerA to match room', { matchId });
+        }
+      }
+
+      if (socketIdB) {
+        const socketB = io.sockets.sockets.get(socketIdB);
+        if (socketB) {
+          socketB.join(`match:${matchId}`);
+          logger.info('Force-joined playerB to match room', { matchId });
+        }
+      }
+    } catch (err) {
+      logger.error('Force-join error', { matchId, error: err.message });
+    }
+  }, 1000);
+
+  // Auto-resolve when timer expires
   setTimeout(async () => {
     await handleTimerExpiry(io, matchId);
   }, timer.durationMs + 2000);
@@ -253,10 +308,18 @@ const handleTimerExpiry = async (io, matchId) => {
 
     logger.info('Match timer expired — auto resolving', { matchId });
 
-    const scoreA = parseFloat(await redisClient.get(`match:${matchId}:score:${matchState.playerAId}`) || '0');
-    const scoreB = parseFloat(await redisClient.get(`match:${matchId}:score:${matchState.playerBId}`) || '0');
-    const timeA = parseInt(await redisClient.get(`match:${matchId}:time:${matchState.playerAId}`) || '999999');
-    const timeB = parseInt(await redisClient.get(`match:${matchId}:time:${matchState.playerBId}`) || '999999');
+    const scoreA = parseFloat(
+      await redisClient.get(`match:${matchId}:score:${matchState.playerAId}`) || '0'
+    );
+    const scoreB = parseFloat(
+      await redisClient.get(`match:${matchId}:score:${matchState.playerBId}`) || '0'
+    );
+    const timeA = parseInt(
+      await redisClient.get(`match:${matchId}:time:${matchState.playerAId}`) || '999999'
+    );
+    const timeB = parseInt(
+      await redisClient.get(`match:${matchId}:time:${matchState.playerBId}`) || '999999'
+    );
 
     let winnerId, loserId;
 
@@ -272,7 +335,9 @@ const handleTimerExpiry = async (io, matchId) => {
         loserId = matchState.playerBId;
       } else {
         winnerId = timeA <= timeB ? matchState.playerAId : matchState.playerBId;
-        loserId = winnerId === matchState.playerAId ? matchState.playerBId : matchState.playerAId;
+        loserId = winnerId === matchState.playerAId
+          ? matchState.playerBId
+          : matchState.playerAId;
       }
     }
 
