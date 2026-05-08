@@ -64,6 +64,10 @@ const initSocket = (httpServer) => {
 
     socket.on('disconnect', async (reason) => {
       logger.info('Socket disconnected', { userId, username, reason });
+      await redisClient.del(`presence:${userId}`);
+       // Remove from in-memory queue
+      const { removeFromMemoryQueue } = require('./matchmakingHandler');
+      removeFromMemoryQueue(userId);
 
       // Only remove presence if this socket is still the current one
       const currentSocketId = await redisClient.get(`presence:${userId}`);

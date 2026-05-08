@@ -8,24 +8,27 @@ const { v4: uuidv4 } = require('uuid');
 
 const VALID_FEES = [10, 25, 50, 100, 200, 500];
 
+// In-memory queue as primary store — instant, no network latency
+// Redis is used for presence and match state only
+const memoryQueues = {};
+VALID_FEES.forEach(fee => { memoryQueues[fee] = []; });
+
 const matchmakingHandler = (io, socket) => {
   const { id: userId, username } = socket.user;
 
   socket.on('queue:join', async ({ entryFee, category = 'all' }) => {
-    console.log(`SERVER RECEIVED queue:join: userId=${userId} fee=${entryFee} socketId=${socket.id}`);
-    console.log(`SERVER: queue:join received from ${userId} with fee ${entryFee} category ${category}`);
+    console.log(`SERVER: queue:join received from ${userId} (${username}) fee=${entryFee} category=${category}`);
     try {
-      if (!VALID_FEES.includes(Number(entryFee))) {
-        return socket.emit('queue:error', {
-          message: `Invalid entry fee. Valid: ${VALID_FEES.join(', ')}`,
-        });
+      const fee = Number(entryFee);
+      if (!VALID_FEES.includes(fee)) {
+        return socket.emit('queue:error', { message: `Invalid entry fee` });
       }
 
-      const existingQueue = await redisClient.get(`user:${userId}:queue`);
-      if (existingQueue) {
-        // Clear stale queue entry — don't block the user
-        await redisClient.zrem(`queue:${existingQueue}`, userId);
-        await redisClient.del(`user:${userId}:queue`);
+      // Check if already in memory queue
+      const alreadyInQueue = memoryQueues[fee]?.find(p => p.userId === userId);
+      if (alreadyInQueue) {
+        // Remove stale entry and re-add
+        memoryQueues[fee] = memoryQueues[fee].filter(p => p.userId !== userId);
       }
 
       // Check hearts
@@ -35,7 +38,6 @@ const matchmakingHandler = (io, socket) => {
           [userId]
         );
         const userData = heartsResult.rows[0];
-
         if (userData && !userData.is_premium) {
           if (userData.hearts_reset_at && new Date() > new Date(userData.hearts_reset_at)) {
             await pool.query(
@@ -48,42 +50,46 @@ const matchmakingHandler = (io, socket) => {
             return socket.emit('queue:error', {
               message: `No hearts remaining. Play again in ${hoursLeft} hour(s).`,
               heartsEmpty: true,
-              resetAt: userData.hearts_reset_at,
             });
           }
         }
       } catch (heartsErr) {
-        // Don't block queue join if hearts check fails
         logger.warn('Hearts check failed', { userId, error: heartsErr.message });
       }
 
-      // Check wallet balance
+      // Check wallet
       const walletResult = await pool.query(
-        'SELECT balance FROM wallets WHERE user_id = $1',
-        [userId]
+        'SELECT balance FROM wallets WHERE user_id = $1', [userId]
       );
-      if (!walletResult.rows[0] || parseFloat(walletResult.rows[0].balance) < entryFee) {
+      if (!walletResult.rows[0] || parseFloat(walletResult.rows[0].balance) < fee) {
         return socket.emit('queue:error', { message: 'Insufficient balance' });
       }
 
-      const timestamp = Date.now();
-      await redisClient.zadd(`queue:${entryFee}`, timestamp, userId);
-      await redisClient.set(`user:${userId}:queue`, String(entryFee), 'EX', 120);
+      // Add to in-memory queue
+      memoryQueues[fee].push({
+        userId,
+        username,
+        category,
+        joinedAt: Date.now(),
+      });
+
+      // Also track in Redis for presence/disconnect handling
+      await redisClient.set(`user:${userId}:queue`, String(fee), 'EX', 120);
       await redisClient.set(`user:${userId}:username`, username, 'EX', 120);
       await redisClient.set(`user:${userId}:category`, category, 'EX', 120);
 
-      const rank = await redisClient.zrank(`queue:${entryFee}`, userId);
+      console.log(`MEMORY QUEUE fee=${fee}: ${memoryQueues[fee].length} players`, memoryQueues[fee].map(p => p.username));
 
       socket.emit('queue:joined', {
-        entryFee,
-        position: (rank ?? 0) + 1,
+        entryFee: fee,
+        position: memoryQueues[fee].length,
         message: 'Looking for opponent...',
       });
 
-      logger.info('User joined queue', { userId, username, entryFee, category });
+      logger.info('User joined queue', { userId, username, entryFee: fee, category });
 
       // Try to create match immediately
-      await tryCreateMatch(io, entryFee);
+      await tryCreateMatch(io, fee);
 
     } catch (err) {
       logger.error('queue:join error', { userId, error: err.message });
@@ -93,14 +99,15 @@ const matchmakingHandler = (io, socket) => {
 
   socket.on('queue:leave', async () => {
     try {
-      const queueFee = await redisClient.get(`user:${userId}:queue`);
-      if (queueFee) {
-        await redisClient.zrem(`queue:${queueFee}`, userId);
-        await redisClient.del(`user:${userId}:queue`);
-      }
+      // Remove from all memory queues
+      VALID_FEES.forEach(fee => {
+        memoryQueues[fee] = memoryQueues[fee].filter(p => p.userId !== userId);
+      });
+      await redisClient.del(`user:${userId}:queue`);
       await redisClient.del(`user:${userId}:username`);
       await redisClient.del(`user:${userId}:category`);
       socket.emit('queue:left', { message: 'Left the queue' });
+      logger.info('User left queue', { userId });
     } catch (err) {
       logger.error('queue:leave error', { userId, error: err.message });
     }
@@ -108,73 +115,54 @@ const matchmakingHandler = (io, socket) => {
 };
 
 const tryCreateMatch = async (io, entryFee) => {
-  const queueKey = `queue:${entryFee}`;
+  const fee = Number(entryFee);
+  const queue = memoryQueues[fee];
 
-   const keyType = await redisClient.type(queueKey);
-  if (keyType !== 'none' && keyType !== 'zset') {
-    console.warn(`WORKER: queue key ${queueKey} has wrong type ${keyType} — deleting`);
-    await redisClient.del(queueKey);
+  console.log(`MATCH CHECK: fee=${fee} queue=${queue?.length} players=${queue?.map(p=>p.username).join(',')}`);
+
+  if (!queue || queue.length < 2) return null;
+
+  // Take first two players
+  const playerA = queue.shift();
+  const playerB = queue.shift();
+
+  if (!playerA || !playerB) return null;
+  if (playerA.userId === playerB.userId) {
+    // Same user somehow — put back and abort
+    queue.unshift(playerB);
     return null;
   }
 
-  const queueLength = await redisClient.zcard(queueKey);
-  console.log(`WORKER: fee=${entryFee} queueLength=${queueLength}`); // ADD THIS
+  console.log(`CREATING MATCH: ${playerA.username} vs ${playerB.username} fee=${fee}`);
 
-  if (queueLength < 2) return null;
+  // Clean up Redis queue tracking
+  await redisClient.del(`user:${playerA.userId}:queue`);
+  await redisClient.del(`user:${playerB.userId}:queue`);
 
-  const players = await redisClient.zrange(queueKey, 0, 1);
-  console.log(`WORKER: players found:`, players); // ADD THIS
-  if (!players || players.length < 2) return null;
+  const category = playerA.category || 'all';
+  const difficulty = fee <= 25 ? 'easy' : fee <= 100 ? 'medium' : 'hard';
 
-  const [playerAId, playerBId] = players;
-
-  // Prevent matching a player with themselves
-  if (playerAId === playerBId) {
-    await redisClient.zrem(queueKey, playerAId);
-    return null;
-  }
-
-  // Remove from queue immediately to prevent double matching
-  await redisClient.zrem(queueKey, playerAId);
-  await redisClient.zrem(queueKey, playerBId);
-  await redisClient.del(`user:${playerAId}:queue`);
-  await redisClient.del(`user:${playerBId}:queue`);
-
-  // Get category preference
-  const categoryA = await redisClient.get(`user:${playerAId}:category`) || 'all';
-
-  // Pick difficulty based on entry fee
-  const difficulty = entryFee <= 25 ? 'easy' : entryFee <= 100 ? 'medium' : 'hard';
-
-  // Build problem query
-  const problemQuery = categoryA !== 'all'
+  const problemQuery = category !== 'all'
     ? `SELECT id, title, description, time_limit_seconds, test_cases
-       FROM problems
-       WHERE difficulty = $1 AND is_active = true AND category = $2
+       FROM problems WHERE difficulty = $1 AND is_active = true AND category = $2
        ORDER BY RANDOM() LIMIT 1`
     : `SELECT id, title, description, time_limit_seconds, test_cases
-       FROM problems
-       WHERE difficulty = $1 AND is_active = true
+       FROM problems WHERE difficulty = $1 AND is_active = true
        ORDER BY RANDOM() LIMIT 1`;
 
-  const problemParams = categoryA !== 'all'
-    ? [difficulty, categoryA]
-    : [difficulty];
-
+  const problemParams = category !== 'all' ? [difficulty, category] : [difficulty];
   const problemResult = await pool.query(problemQuery, problemParams);
 
-  // No problem found — put players back and abort
   if (!problemResult.rows[0]) {
-    logger.error('No problems found', { difficulty, category: categoryA });
-    await redisClient.zadd(queueKey, Date.now(), playerAId);
-    await redisClient.zadd(queueKey, Date.now(), playerBId);
-    await redisClient.set(`user:${playerAId}:queue`, String(entryFee), 'EX', 120);
-    await redisClient.set(`user:${playerBId}:queue`, String(entryFee), 'EX', 120);
-    io.to(`user:${playerAId}`).emit('queue:error', {
-      message: 'No problems available for this category. Try "All".',
+    logger.error('No problems found', { difficulty, category });
+    // Put players back
+    queue.unshift(playerB);
+    queue.unshift(playerA);
+    io.to(`user:${playerA.userId}`).emit('queue:error', {
+      message: 'No problems available. Try category "All".',
     });
-    io.to(`user:${playerBId}`).emit('queue:error', {
-      message: 'No problems available for this category. Try "All".',
+    io.to(`user:${playerB.userId}`).emit('queue:error', {
+      message: 'No problems available. Try category "All".',
     });
     return null;
   }
@@ -182,40 +170,33 @@ const tryCreateMatch = async (io, entryFee) => {
   const problem = problemResult.rows[0];
   const matchId = uuidv4();
   const platformFeePercent = parseFloat(process.env.PLATFORM_FEE_PERCENT || 10) / 100;
-  const prizePool = parseFloat(entryFee) * 2 * (1 - platformFeePercent);
-  const platformFee = parseFloat(entryFee) * 2 * platformFeePercent;
+  const prizePool = fee * 2 * (1 - platformFeePercent);
+  const platformFee = fee * 2 * platformFeePercent;
 
-  // Create match + lock funds atomically
   try {
     await withTransaction(async (client) => {
       await client.query(
-        `INSERT INTO matches
-           (id, player_a_id, player_b_id, problem_id, entry_fee, prize_pool, platform_fee, status, started_at)
+        `INSERT INTO matches (id, player_a_id, player_b_id, problem_id, entry_fee, prize_pool, platform_fee, status, started_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'IN_PROGRESS', NOW())`,
-        [matchId, playerAId, playerBId, problem.id, entryFee, prizePool, platformFee]
+        [matchId, playerA.userId, playerB.userId, problem.id, fee, prizePool, platformFee]
       );
-      await lockFundsForMatch(playerAId, parseFloat(entryFee), matchId, client);
-      await lockFundsForMatch(playerBId, parseFloat(entryFee), matchId, client);
+      await lockFundsForMatch(playerA.userId, fee, matchId, client);
+      await lockFundsForMatch(playerB.userId, fee, matchId, client);
     });
   } catch (txErr) {
     logger.error('Match transaction failed', { error: txErr.message });
-    // Refund queue positions
-    await redisClient.zadd(queueKey, Date.now(), playerAId);
-    await redisClient.zadd(queueKey, Date.now(), playerBId);
-    await redisClient.set(`user:${playerAId}:queue`, String(entryFee), 'EX', 120);
-    await redisClient.set(`user:${playerBId}:queue`, String(entryFee), 'EX', 120);
+    queue.unshift(playerB);
+    queue.unshift(playerA);
     return null;
   }
 
-  // Start timer
   const timer = await startMatchTimer(matchId);
 
-  // Store match state
   const matchState = {
     matchId,
-    playerAId,
-    playerBId,
-    entryFee: parseFloat(entryFee),
+    playerAId: playerA.userId,
+    playerBId: playerB.userId,
+    entryFee: fee,
     prizePool,
     platformFee,
     problemId: problem.id,
@@ -223,31 +204,17 @@ const tryCreateMatch = async (io, entryFee) => {
     playerASubmitted: false,
     playerBSubmitted: false,
   };
-  await redisClient.set(
-    `match:${matchId}:state`,
-    JSON.stringify(matchState),
-    'EX', 7200
-  );
+  await redisClient.set(`match:${matchId}:state`, JSON.stringify(matchState), 'EX', 7200);
 
-  await setActiveMatch(playerAId, matchId);
-  await setActiveMatch(playerBId, matchId);
-
-  const playerAUsername = await redisClient.get(`user:${playerAId}:username`) || 'Player A';
-  const playerBUsername = await redisClient.get(`user:${playerBId}:username`) || 'Player B';
+  await setActiveMatch(playerA.userId, matchId);
+  await setActiveMatch(playerB.userId, matchId);
 
   const publicTestCases = problem.test_cases
-    ? problem.test_cases.filter(tc => tc.is_public)
-    : [];
+    ? problem.test_cases.filter(tc => tc.is_public) : [];
 
   const matchPayload = {
-    matchId,
-    entryFee,
-    prizePool,
-    timer: {
-      startTs: timer.startTs,
-      endTs: timer.endTs,
-      durationMs: timer.durationMs,
-    },
+    matchId, entryFee: fee, prizePool,
+    timer: { startTs: timer.startTs, endTs: timer.endTs, durationMs: timer.durationMs },
     problem: {
       id: problem.id,
       title: problem.title,
@@ -257,51 +224,41 @@ const tryCreateMatch = async (io, entryFee) => {
     },
   };
 
-  // Emit match:ready to both players
-  io.to(`user:${playerAId}`).emit('match:ready', {
+  io.to(`user:${playerA.userId}`).emit('match:ready', {
     ...matchPayload,
-    you: { id: playerAId, username: playerAUsername },
-    opponent: { id: playerBId, username: playerBUsername },
+    you: { id: playerA.userId, username: playerA.username },
+    opponent: { id: playerB.userId, username: playerB.username },
   });
 
-  io.to(`user:${playerBId}`).emit('match:ready', {
+  io.to(`user:${playerB.userId}`).emit('match:ready', {
     ...matchPayload,
-    you: { id: playerBId, username: playerBUsername },
-    opponent: { id: playerAId, username: playerAUsername },
+    you: { id: playerB.userId, username: playerB.username },
+    opponent: { id: playerA.userId, username: playerA.username },
   });
 
   logger.info('Match created and broadcasted', {
-    matchId, playerAId, playerBId, entryFee,
-    problem: problem.title, difficulty, category: categoryA,
+    matchId, playerA: playerA.username, playerB: playerB.username,
+    fee, problem: problem.title,
   });
 
-  // Force-join both players to match room using their socket connections
+  // Force join both to match room
   setTimeout(async () => {
     try {
-      const socketIdA = await redisClient.get(`presence:${playerAId}`);
-      const socketIdB = await redisClient.get(`presence:${playerBId}`);
-
+      const socketIdA = await redisClient.get(`presence:${playerA.userId}`);
+      const socketIdB = await redisClient.get(`presence:${playerB.userId}`);
       if (socketIdA) {
-        const socketA = io.sockets.sockets.get(socketIdA);
-        if (socketA) {
-          socketA.join(`match:${matchId}`);
-          logger.info('Force-joined playerA to match room', { matchId });
-        }
+        const sa = io.sockets.sockets.get(socketIdA);
+        if (sa) sa.join(`match:${matchId}`);
       }
-
       if (socketIdB) {
-        const socketB = io.sockets.sockets.get(socketIdB);
-        if (socketB) {
-          socketB.join(`match:${matchId}`);
-          logger.info('Force-joined playerB to match room', { matchId });
-        }
+        const sb = io.sockets.sockets.get(socketIdB);
+        if (sb) sb.join(`match:${matchId}`);
       }
     } catch (err) {
       logger.error('Force-join error', { matchId, error: err.message });
     }
-  }, 1000);
+  }, 500);
 
-  // Auto-resolve when timer expires
   setTimeout(async () => {
     await handleTimerExpiry(io, matchId);
   }, timer.durationMs + 2000);
@@ -313,57 +270,45 @@ const handleTimerExpiry = async (io, matchId) => {
   try {
     const matchStateRaw = await redisClient.get(`match:${matchId}:state`);
     if (!matchStateRaw) return;
-
     const matchState = JSON.parse(matchStateRaw);
     if (matchState.status !== 'IN_PROGRESS') return;
 
-    logger.info('Match timer expired — auto resolving', { matchId });
-
-    const scoreA = parseFloat(
-      await redisClient.get(`match:${matchId}:score:${matchState.playerAId}`) || '0'
-    );
-    const scoreB = parseFloat(
-      await redisClient.get(`match:${matchId}:score:${matchState.playerBId}`) || '0'
-    );
-    const timeA = parseInt(
-      await redisClient.get(`match:${matchId}:time:${matchState.playerAId}`) || '999999'
-    );
-    const timeB = parseInt(
-      await redisClient.get(`match:${matchId}:time:${matchState.playerBId}`) || '999999'
-    );
+    const scoreA = parseFloat(await redisClient.get(`match:${matchId}:score:${matchState.playerAId}`) || '0');
+    const scoreB = parseFloat(await redisClient.get(`match:${matchId}:score:${matchState.playerBId}`) || '0');
+    const timeA = parseInt(await redisClient.get(`match:${matchId}:time:${matchState.playerAId}`) || '999999');
+    const timeB = parseInt(await redisClient.get(`match:${matchId}:time:${matchState.playerBId}`) || '999999');
 
     let winnerId, loserId;
-
-    if (scoreA > scoreB) {
-      winnerId = matchState.playerAId;
-      loserId = matchState.playerBId;
-    } else if (scoreB > scoreA) {
-      winnerId = matchState.playerBId;
-      loserId = matchState.playerAId;
-    } else {
+    if (scoreA > scoreB) { winnerId = matchState.playerAId; loserId = matchState.playerBId; }
+    else if (scoreB > scoreA) { winnerId = matchState.playerBId; loserId = matchState.playerAId; }
+    else {
       if (timeA === 999999 && timeB === 999999) {
-        winnerId = matchState.playerAId;
-        loserId = matchState.playerBId;
+        winnerId = matchState.playerAId; loserId = matchState.playerBId;
       } else {
         winnerId = timeA <= timeB ? matchState.playerAId : matchState.playerBId;
-        loserId = winnerId === matchState.playerAId
-          ? matchState.playerBId
-          : matchState.playerAId;
+        loserId = winnerId === matchState.playerAId ? matchState.playerBId : matchState.playerAId;
       }
     }
 
-    io.to(`match:${matchId}`).emit('match:time_up', {
-      matchId,
-      message: "Time's up! Calculating results...",
-    });
-
+    io.to(`match:${matchId}`).emit('match:time_up', { matchId, message: "Time's up!" });
     const { resolveMatch } = require('./matchHandler');
     await resolveMatch(io, matchId, winnerId, loserId, 'TIME_UP');
-
   } catch (err) {
     logger.error('Timer expiry error', { matchId, error: err.message });
   }
 };
 
+// Clean up memory queue on disconnect
+const removeFromMemoryQueue = (userId) => {
+  VALID_FEES.forEach(fee => {
+    const before = memoryQueues[fee].length;
+    memoryQueues[fee] = memoryQueues[fee].filter(p => p.userId !== userId);
+    if (memoryQueues[fee].length < before) {
+      console.log(`Removed ${userId} from memory queue fee=${fee}`);
+    }
+  });
+};
+
 module.exports = matchmakingHandler;
 module.exports.tryCreateMatch = tryCreateMatch;
+module.exports.removeFromMemoryQueue = removeFromMemoryQueue;

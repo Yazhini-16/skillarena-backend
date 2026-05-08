@@ -15,42 +15,40 @@ const start = async () => {
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Server listening on 0.0.0.0:${PORT}`);
-    logger.info(`Server + Socket.io running on port ${PORT} [${process.env.NODE_ENV}]`);
+    logger.info(`Server running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
 
   try {
     await testConnection();
     logger.info('PostgreSQL connected');
   } catch (err) {
-    logger.error('PostgreSQL connection failed', { error: err.message });
+    logger.error('PostgreSQL failed', { error: err.message });
   }
 
   try {
     await redisClient.ping();
     logger.info('Redis ping successful');
   } catch (err) {
-    logger.error('Redis connection failed', { error: err.message });
+    logger.error('Redis failed', { error: err.message });
   }
 
   const { tryCreateMatch } = require('./socket/matchmakingHandler');
 
+  // Worker as safety net — primary matching happens on queue:join
   const worker = setInterval(async () => {
-  for (const fee of ENTRY_FEES) {
-    try {
-      const result = await tryCreateMatch(io, fee);
-      if (result) {
-        console.log(`WORKER: Match created for fee ${fee}: ${result}`);
+    for (const fee of ENTRY_FEES) {
+      try {
+        await tryCreateMatch(io, fee);
+      } catch (err) {
+        logger.error('Worker error', { fee, error: err.message });
       }
-    } catch (err) {
-      console.error(`WORKER ERROR fee=${fee}:`, err.message, err.stack);
     }
-  }
-}, 500);
+  }, 1000);
 
   logger.info('Matchmaking worker started');
 
   const shutdown = async (signal) => {
-    logger.info(`${signal} received — shutting down`);
+    logger.info(`${signal} — shutting down`);
     clearInterval(worker);
     httpServer.close(async () => {
       try { await redisClient.quit(); } catch {}
@@ -62,7 +60,7 @@ const start = async () => {
   process.on('SIGINT', () => shutdown('SIGINT'));
 };
 
-start().catch((err) => {
-  console.error('Fatal startup error:', err);
+start().catch(err => {
+  console.error('Fatal:', err);
   process.exit(1);
 });
