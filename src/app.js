@@ -49,6 +49,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/wallet', require('./routes/wallet'));
 app.use('/api/matches', require('./routes/match'));
 app.use('/api/payments', require('./routes/payment'));
+app.use('/api/practice', require('./routes/practice'));
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
