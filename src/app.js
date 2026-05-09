@@ -21,7 +21,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'https://skillarena-frontend-one.vercel.app',
-  'https://skillarena-frontend-two.vercel.app',
+  'https://skillarena-frontend-two.vercel.app/',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
