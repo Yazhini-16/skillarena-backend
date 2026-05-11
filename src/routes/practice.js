@@ -4,6 +4,16 @@ const { authenticate } = require('../middleware/auth');
 const { evaluateCode } = require('../services/judgeService');
 const { success, error } = require('../utils/response');
 
+// Add this route to practice.js
+const { AVAILABLE } = require('../services/judgeService');
+
+router.get('/languages', (req, res) => {
+  return res.json({
+    success: true,
+    data: AVAILABLE,
+    message: 'Language availability',
+  });
+});
 // Get all problems for practice
 router.get('/problems', async (req, res, next) => {
   try {
