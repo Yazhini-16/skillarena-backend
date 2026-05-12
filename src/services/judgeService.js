@@ -161,20 +161,23 @@ const executeCode = async (
   code,
   stdin
 ) => {
-  switch (language) {
-    case 'javascript':
-      return executeJS(code, stdin);
+  switch (language?.toLowerCase()) {
+  case 'javascript':
+  case 'js':
+    return executeJS(code, stdin);
 
-    case 'python':
-      return executePython(code, stdin);
+  case 'python':
+  case 'python3':
+  case 'py':
+    return executePython(code, stdin);
 
-    default:
-      return {
-        stdout: '',
-        stderr: 'Language not supported',
-        exitCode: 1,
-      };
-  }
+  default:
+    return {
+      stdout: '',
+      stderr: `Language not supported: ${language}`,
+      exitCode: 1,
+    };
+}
 };
 
 // ─────────────────────────────────────────────────────────────
