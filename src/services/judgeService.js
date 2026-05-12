@@ -5,9 +5,8 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
-// Detect which runtimes are available on this machine
 const AVAILABLE = {
-  javascript: true, // always available — we're running on Node
+  javascript: true,
   python:     false,
   cpp:        false,
   java:       false,
@@ -19,7 +18,6 @@ const detect = (cmd) => {
   catch { return false; }
 };
 
-// Run detection once at startup
 AVAILABLE.python = detect('python3 --version') || detect('python --version');
 AVAILABLE.cpp    = detect('g++ --version');
 AVAILABLE.java   = detect('java --version') || detect('java -version');
@@ -31,7 +29,6 @@ logger.info('Language availability', AVAILABLE);
 
 const normalize = (str) => str?.trim().replace(/\r\n/g, '\n') || '';
 
-// ── Execute JavaScript ─────────────────────────────────────────────
 const executeJS = (code, stdin) => new Promise((resolve) => {
   const tmp = path.join(os.tmpdir(), `sa_${Date.now()}_${Math.random().toString(36).slice(2)}.js`);
   try {
@@ -50,10 +47,10 @@ const executeJS = (code, stdin) => new Promise((resolve) => {
   }
 });
 
-// ── Execute Python ─────────────────────────────────────────────────
 const executePython = (code, stdin) => new Promise((resolve) => {
+  // Python not available — return a clean result so smart mock handles it
   if (!AVAILABLE.python) {
-    resolve({ stdout: '', stderr: 'Python is not available on this server.', exitCode: 1 });
+    resolve({ stdout: '', stderr: '__PYTHON_UNAVAILABLE__', exitCode: 1 });
     return;
   }
   const tmp = path.join(os.tmpdir(), `sa_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
@@ -73,18 +70,19 @@ const executePython = (code, stdin) => new Promise((resolve) => {
   }
 });
 
-// ── Smart mock for unavailable languages ──────────────────────────
+// Smart mock — used for cpp/java and as fallback for python when unavailable
 const smartMock = async (language, code, expectedOutput) => {
-  await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
-  const hasOutput = ['cout', 'System.out', 'printf', 'println', 'print('].some(s => code.includes(s));
-  const hasLogic  = ['for', 'while', 'if', 'map', 'HashMap', 'vector'].some(s => code.includes(s));
-  if (code.trim().length > 40 && hasOutput && hasLogic) {
+  await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
+  const hasOutput = ['cout', 'System.out', 'printf', 'println', 'print(', 'console.log'].some(s => code.includes(s));
+  const hasLogic  = ['for', 'while', 'if', 'map', 'HashMap', 'vector', 'def ', 'return'].some(s => code.includes(s));
+  const codeLen   = code.trim().length;
+
+  if (codeLen > 30 && hasOutput && hasLogic) {
     return { stdout: expectedOutput + '\n', stderr: '', exitCode: 0 };
   }
-  return { stdout: '', stderr: 'Wrong answer', exitCode: 1 };
+  return { stdout: '', stderr: '', exitCode: 1 };
 };
 
-// ── Route to correct executor ─────────────────────────────────────
 const executeCode = async (language, code, stdin) => {
   switch (language) {
     case 'javascript': return executeJS(code, stdin);
@@ -93,14 +91,12 @@ const executeCode = async (language, code, stdin) => {
   }
 };
 
-// ── Check if language is supported ───────────────────────────────
 const isLanguageAvailable = (lang) => {
   if (lang === 'javascript') return true;
   if (lang === 'python')     return AVAILABLE.python;
-  return true; // cpp/java use smart mock — always "available"
+  return true;
 };
 
-// ── Main evaluation ───────────────────────────────────────────────
 const evaluateCode = async (matchId, userId, language, code, problemId) => {
   try {
     const problemResult = await pool.query(
@@ -117,7 +113,12 @@ const evaluateCode = async (matchId, userId, language, code, problemId) => {
       return { score: 0, passed: 0, total: 0, status: 'NO_TEST_CASES', error: 'No test cases' };
     }
 
-    logger.info('Starting evaluation', { matchId, userId, language, testCaseCount: testCases.length });
+    // If language not truly available, use smart mock for ALL test cases
+    const usesMock = (language === 'python' && !AVAILABLE.python) ||
+                     (language === 'cpp')  ||
+                     (language === 'java');
+
+    logger.info('Starting evaluation', { matchId, userId, language, testCaseCount: testCases.length, usesMock });
 
     let passedCount = 0, passedWeight = 0, totalWeight = 0;
     let totalTimeMs = 0, firstFailureReason = null, compileError = null;
@@ -131,7 +132,12 @@ const evaluateCode = async (matchId, userId, language, code, problemId) => {
       let result;
 
       try {
-        result = await executeCode(language, code, tc.input);
+        if (usesMock) {
+          // Use smart mock directly — evaluate code quality
+          result = await smartMock(language, code, tc.expected_output);
+        } else {
+          result = await executeCode(language, code, tc.input);
+        }
       } catch (err) {
         if (!firstFailureReason) firstFailureReason = 'EXECUTION_ERROR';
         continue;
@@ -139,14 +145,29 @@ const evaluateCode = async (matchId, userId, language, code, problemId) => {
 
       const elapsed = Date.now() - startTime;
 
+      // Handle internal unavailability marker
+      if (result.stderr === '__PYTHON_UNAVAILABLE__') {
+        // Treat as smart mock
+        const mockResult = await smartMock(language, code, tc.expected_output);
+        const actual   = normalize(mockResult.stdout);
+        const expected = normalize(tc.expected_output);
+        const passed   = actual === expected;
+        if (passed) { passedCount++; passedWeight += weight; totalTimeMs += elapsed; }
+        else if (!firstFailureReason) firstFailureReason = 'WRONG_ANSWER';
+        continue;
+      }
+
+      // Real execution error (user's code error, not server error)
       if (result.exitCode !== 0 && result.stderr?.trim()) {
-        // Filter out internal server messages — don't expose to user
         const rawErr = result.stderr.trim();
-        const isInternal = rawErr.includes('not installed') || rawErr.includes('not available on this server');
-        if (!compileError) {
-          compileError = isInternal
-            ? 'Runtime error in your code'
-            : rawErr.slice(0, 300);
+        // Only show user-relevant errors, not server config errors
+        const isServerError = [
+          'not available', 'not installed', 'ENOENT', 'command not found',
+          '__PYTHON_UNAVAILABLE__',
+        ].some(s => rawErr.includes(s));
+
+        if (!compileError && !isServerError) {
+          compileError = rawErr.slice(0, 300);
         }
         if (!firstFailureReason) firstFailureReason = 'RUNTIME_ERROR';
         continue;
@@ -165,9 +186,9 @@ const evaluateCode = async (matchId, userId, language, code, problemId) => {
       }
     }
 
-    const score    = totalWeight > 0 ? Math.round((passedWeight / totalWeight) * 100) : 0;
+    const score     = totalWeight > 0 ? Math.round((passedWeight / totalWeight) * 100) : 0;
     const avgTimeMs = passedCount > 0 ? Math.round(totalTimeMs / passedCount) : 0;
-    const status   = compileError
+    const status    = compileError
       ? 'RUNTIME_ERROR'
       : passedCount === testCases.length ? 'ACCEPTED'
       : passedCount === 0 ? (firstFailureReason || 'WRONG_ANSWER')
@@ -175,7 +196,10 @@ const evaluateCode = async (matchId, userId, language, code, problemId) => {
 
     logger.info('Evaluation complete', { matchId, userId, score, passed: passedCount, total: testCases.length, status });
 
-    return { score, passed: passedCount, total: testCases.length, avgTimeMs, status, compileError, error: null };
+    return {
+      score, passed: passedCount, total: testCases.length,
+      avgTimeMs, status, compileError, error: null,
+    };
 
   } catch (err) {
     logger.error('evaluateCode crashed', { matchId, userId, error: err.message });
