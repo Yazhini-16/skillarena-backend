@@ -2,10 +2,12 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db');
 const { generateToken } = require('../utils/jwt');
 
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
 const register = async ({ username, email, password }) => {
   // Validate
   if (!username || !email || !password) throw { statusCode: 400, message: 'All fields required' };
+  if (!EMAIL_REGEX.test(email)) throw { statusCode: 400, message: 'Invalid email format' };
   if (password.length < 8) throw { statusCode: 400, message: 'Password must be at least 8 characters' };
   if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
     throw { statusCode: 400, message: 'Username must be 3-30 chars, letters/numbers/underscore only' };
@@ -45,6 +47,7 @@ const register = async ({ username, email, password }) => {
 
 const login = async ({ email, password }) => {
   if (!email || !password) throw { statusCode: 400, message: 'Email and password required' };
+  if (!EMAIL_REGEX.test(email)) throw { statusCode: 400, message: 'Invalid email format' };
 
   const result = await pool.query(
     `SELECT id, username, email, password_hash, skill_rating, is_active FROM users WHERE email = $1`,
