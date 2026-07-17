@@ -3,9 +3,14 @@ services:
     name: skillarena-backend
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci --only=production
     startCommand: node src/index.js
     healthCheckPath: /health
+    # Use native Node.js build (not nixpacks) for faster builds on free tier
+    buildFilter:
+      - "package.json"
+      - "package-lock.json"
+      - "src/**/*"
     envVars:
       - key: NODE_ENV
         value: production
@@ -28,4 +33,5 @@ services:
       - key: PLATFORM_FEE_PERCENT
         value: 10%
     # Required for WebSocket support on Render free tier
-    # Note: Free tier has some limitations with WebSockets
+    # Note: Free tier has some limitations with WebSockets (may spin down after inactivity)
+    # Consider upgrading to paid plan for production WebSocket usage

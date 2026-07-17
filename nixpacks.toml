@@ -1,5 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodejs", "python311", "gcc"]
-
-[start]
-cmd = "npm start"
