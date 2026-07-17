@@ -4,7 +4,7 @@ services:
     env: node
     plan: free
     buildCommand: npm ci --only=production
-    startCommand: node src/index.js
+    startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
