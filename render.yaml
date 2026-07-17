@@ -6,11 +6,6 @@ services:
     buildCommand: npm ci --only=production
     startCommand: node src/index.js
     healthCheckPath: /health
-    # Use native Node.js build (not nixpacks) for faster builds on free tier
-    buildFilter:
-      - "package.json"
-      - "package-lock.json"
-      - "src/**/*"
     envVars:
       - key: NODE_ENV
         value: production
